@@ -1,0 +1,79 @@
+# Thresholds follow the Activity 1 Step 3 spec (SLA: p99 < 2s, uptime 99.95%)
+groups:
+  - name: llm_sla_alerts
+    rules:
+      - alert: LLMHighLatencyP95
+        expr: llm:latency_p95:5m > 1.5
+        for: 2m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "P95 latency above 1.5s on {{ $labels.model }}"
+          description: "P95 = {{ $value | printf \"%.2f\" }}s (SLA p99 limit 2s)."
+          runbook_url: "https://wiki.globalai.com/runbooks/llm-latency"
+      - alert: LLMSLABreachP99
+        expr: llm:latency_p99:5m > 2
+        for: 1m
+        labels: {severity: critical, team: platform, pagerduty: "true"}
+        annotations:
+          summary: "P99 latency SLA (2s) breached on {{ $labels.model }}"
+          runbook_url: "https://wiki.globalai.com/runbooks/llm-latency-critical"
+      - alert: LLMHighErrorRate
+        expr: llm:error_ratio:5m * 100 > 1
+        for: 2m
+        labels: {severity: critical, team: platform, pagerduty: "true"}
+        annotations:
+          summary: "Error rate above 1%"
+          description: "Error rate is {{ $value | printf \"%.2f\" }}%."
+          runbook_url: "https://wiki.globalai.com/runbooks/llm-errors"
+      - alert: LLMServiceDown
+        expr: up{job="llm-inference"} == 0
+        for: 1m
+        labels: {severity: critical, team: platform, pagerduty: "true"}
+        annotations:
+          summary: "LLM pod {{ $labels.pod }} is down"
+          runbook_url: "https://wiki.globalai.com/runbooks/llm-down"
+      - alert: LLMAvailabilityBelowSLO
+        expr: llm:availability:24h < 0.9995
+        for: 5m
+        labels: {severity: critical, team: platform}
+        annotations:
+          summary: "24h availability below 99.95%"
+          runbook_url: "https://wiki.globalai.com/runbooks/availability"
+
+  - name: llm_capacity_alerts
+    rules:
+      - alert: HighRequestQueueDepth
+        expr: avg(llm_request_queue_depth) > 30
+        for: 2m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "Avg queue depth above 30 per pod - HPA should be scaling"
+          runbook_url: "https://wiki.globalai.com/runbooks/queue-depth"
+      - alert: HPAMaxedOut
+        expr: kube_horizontalpodautoscaler_status_current_replicas{namespace="llm-production"} == kube_horizontalpodautoscaler_spec_max_replicas{namespace="llm-production"}
+        for: 10m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "HPA at max replicas for 10m - raise maxReplicas or shed load"
+      - alert: GPUHighUtilization
+        expr: DCGM_FI_DEV_GPU_UTIL > 90
+        for: 5m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "GPU {{ $labels.gpu }} above 90%"
+
+  - name: llm_cost_alerts
+    rules:
+      - alert: LLMCostAnomaly
+        expr: llm:cost_per_hour:5m > 1.2 * llm:cost_per_hour:baseline_7d
+        for: 15m
+        labels: {severity: warning, team: finance}
+        annotations:
+          summary: "Hourly spend more than 20% above 7-day baseline"
+          description: "Current ${{ $value | printf \"%.0f\" }}/h."
+      - alert: LowCacheHitRatio
+        expr: llm:cache_hit_ratio:5m < 0.25
+        for: 15m
+        labels: {severity: warning, team: platform}
+        annotations:
+          summary: "Cache hit ratio under the 25% target floor"

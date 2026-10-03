@@ -1,0 +1,101 @@
+# GlobalAI LLM Platform - Prometheus configuration (Activity 1, Step 1)
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    environment: production
+    service: globalai-llm
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+      api_version: v2
+
+rule_files:
+  - /etc/prometheus/rules/alert_rules.yml
+  - /etc/prometheus/rules/recording_rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Service discovery for LLM pods: scrape any pod in llm-production that is
+  # annotated prometheus.io/scrape=true (replaces static targets, so HPA-created
+  # pods are picked up automatically).
+  - job_name: llm-inference
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [llm-production]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: llm-inference
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+        target_label: __tmp_port
+      - source_labels: [__meta_kubernetes_pod_ip, __tmp_port]
+        separator: ":"
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_label_model]
+        target_label: model
+
+  - job_name: api-gateway
+    kubernetes_sd_configs:
+      - role: service
+        namespaces:
+          names: [llm-production]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_label_app]
+        regex: api-gateway
+        action: keep
+
+  # GPU metrics (DCGM exporter) -> gpu_utilization
+  - job_name: gpu-metrics
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [gpu-operator]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: dcgm-exporter
+        action: keep
+
+  - job_name: node-exporter
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.*):\d+'
+        replacement: '$1:9100'
+        target_label: __address__
+
+  - job_name: redis
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  - job_name: llm-cost-optimizer
+    static_configs:
+      - targets: ['cost-optimizer:9102']
+
+# -----------------------------------------------------------------------------
+# Custom metrics the application must expose (names match alerts/dashboard/HPA)
+#   llm_request_duration_seconds{model,endpoint}   Histogram  (== request_latency_seconds)
+#   llm_request_total{model,status,endpoint}       Counter
+#   llm_request_queue_depth{model}                 Gauge      (HPA scaling signal)
+#   llm_tokens_processed_total{model,direction}    Counter    (direction=input|output)
+#   llm_gpu_utilization{model,gpu_id}              Gauge      (also DCGM_FI_DEV_GPU_UTIL)
+#   llm_cost_dollars_total{model,tier}             Counter
+#   llm_cost_per_request_dollars{model}            Histogram
+#   llm_active_users                               Gauge
+#   llm_cache_hits_total / llm_cache_misses_total{cache_type}  Counter
+# -----------------------------------------------------------------------------

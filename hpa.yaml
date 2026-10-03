@@ -1,0 +1,52 @@
+# GlobalAI - Activity 2: HPA on queue depth + P95 latency (not CPU alone)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: llm-inference-hpa
+  namespace: llm-production
+  labels: {app: llm-inference}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: llm-inference}
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    # Primary, proactive signal: GPU pods need 4-5 min to boot, so scale on backlog
+    - type: Pods
+      pods:
+        metric: {name: llm_request_queue_depth}
+        target: {type: AverageValue, averageValue: "30"}     # scale up when avg queue > 30/pod
+    # SLA guard: P95 latency target 1.5s (adapter returns SECONDS; "1500m" = 1.5)
+    - type: Pods
+      pods:
+        metric: {name: llm_request_latency_p95_seconds}
+        target: {type: AverageValue, averageValue: "1500m"}
+    # Safety net only
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 75}
+  behavior:
+    scaleUp:                                  # aggressive
+      stabilizationWindowSeconds: 120         # breach must persist 2 minutes
+      selectPolicy: Max
+      policies:
+        - {type: Pods, value: 2, periodSeconds: 60}    # add two pods per step
+    scaleDown:                                # conservative
+      stabilizationWindowSeconds: 300         # 300s anti-flapping window
+      selectPolicy: Min
+      policies:
+        - {type: Pods, value: 1, periodSeconds: 900}   # remove one pod per 15 min
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: llm-inference-pdb, namespace: llm-production}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: llm-inference}}
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {name: llm-inference-vpa, namespace: llm-production}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: llm-inference}
+  updatePolicy: {updateMode: "Off"}        # recommendations only; avoid fighting the HPA
